@@ -22,9 +22,16 @@ import shapely.geometry
 import shutil
 import time
 import urllib.request
+from urllib.error import URLError
 
 # We're allowed 50000 requests in a 24 hour period.
 MIN_DELAY_BETWEEN_REQUESTS = datetime.timedelta(seconds=(24.0 * 60.0 * 60.0) / 50000)
+
+
+class BingMapsTooManyAttempts(Exception):
+    """Custom Exception for handling the case where there are too many attempts to
+    connect with the Bing Maps API"""
+    pass
 
 
 class BingMapsClient(object):
@@ -34,16 +41,32 @@ class BingMapsClient(object):
         self._handshake()
         self.last_fetch = datetime.datetime.now()
 
-    def fetch_tile(self, quadkey, dest_path):
+    def fetch_tile(self, quadkey, dest_path, attempts_remaining=3):
         subdomain = random.choice(self.image_url_subdomains)
         request_url = self.template_image_url.replace('{subdomain}', subdomain).replace('{quadkey}', str(quadkey))
 
         elapsed_between_requests = datetime.datetime.now() - self.last_fetch
         if elapsed_between_requests <= MIN_DELAY_BETWEEN_REQUESTS:
-            time.sleep((MIN_DELAY_BETWEEN_REQUESTS - elapsed_between_requests).total_seconds())
+            sleep_seconds = (MIN_DELAY_BETWEEN_REQUESTS - elapsed_between_requests).total_seconds()
+            print("Sleeping {} seconds".format(sleep_seconds))
+            time.sleep(sleep_seconds)
 
         self.last_fetch = datetime.datetime.now()
-        (download_filename, headers) = urllib.request.urlretrieve(request_url)
+
+        try:
+            (download_filename, headers) = urllib.request.urlretrieve(request_url)
+        except URLError as e:
+            # TODO: Replace with proper logging
+            print(
+                "Unable to reach Bing API because {},"
+                "remaining attempts: {}").format(e, attempts_remaining)
+            if attempts_remaining <= 0:
+                print("Bailing to contacting Bing for maps, too many attempts")
+                raise BingMapsTooManyAttempts
+            else:
+                print("Trying to contact Bing again")
+                self.fetch_tile(quadkey, dest_path, attempts_remaining - 1)
+                return
 
         if 'X-MS-BM-WS-INFO' in headers:
             raise Exception('Exceeded rate limit.')
